@@ -316,6 +316,7 @@ fn main() -> anyhow::Result<()> {
     });
 
     println!("Press Ctrl-C to stop");
+    println!("try `nc -u {} {}` in another shell", host, port);
     std::thread::spawn(move || {
         let mut stop_tx = Some(stop_tx);
         ctrlc::set_handler(move || {
