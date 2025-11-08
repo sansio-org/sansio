@@ -134,6 +134,14 @@ impl Handler for ChatHandler {
             );
         }
     }
+
+    fn handle_timeout(
+        &mut self,
+        _ctx: &Context<Self::Rin, Self::Rout, Self::Win, Self::Wout>,
+        _now: Instant,
+    ) {
+        //last handler, no need to fire_handle_timeout
+    }
     fn poll_timeout(
         &mut self,
         _ctx: &Context<Self::Rin, Self::Rout, Self::Win, Self::Wout>,
@@ -201,18 +209,16 @@ fn write_socket_output(
 
 fn read_socket_input(socket: &UdpSocket, buf: &mut [u8]) -> Option<TaggedBytesMut> {
     match socket.recv_from(buf) {
-        Ok((n, peer_addr)) => {
-            return Some(TaggedBytesMut {
-                now: Instant::now(),
-                transport: TransportContext {
-                    local_addr: socket.local_addr().unwrap(),
-                    peer_addr,
-                    protocol: Protocol::UDP,
-                    ecn: None,
-                },
-                message: BytesMut::from(&buf[..n]),
-            });
-        }
+        Ok((n, peer_addr)) => Some(TaggedBytesMut {
+            now: Instant::now(),
+            transport: TransportContext {
+                local_addr: socket.local_addr().unwrap(),
+                peer_addr,
+                protocol: Protocol::UDP,
+                ecn: None,
+            },
+            message: BytesMut::from(&buf[..n]),
+        }),
 
         Err(e) => match e.kind() {
             // Expected error for set_read_timeout(). One for windows, one for the rest.
