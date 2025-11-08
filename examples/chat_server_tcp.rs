@@ -1,18 +1,20 @@
 use bytes::BytesMut;
 use clap::Parser;
+use log::{trace, warn};
 use std::{
     cell::RefCell,
     collections::HashMap,
-    io::{ErrorKind, Write},
+    io::{ErrorKind, Read, Write},
     net::SocketAddr,
-    net::UdpSocket,
+    net::{TcpListener, TcpStream},
     rc::Rc,
     rc::Weak,
     str::FromStr,
     time::{Duration, Instant},
 };
+use wg::WaitGroup;
 
-use sansio::{Context, Handler, InboundPipeline, OutboundPipeline, Pipeline};
+use sansio::{Context, Handler, InboundPipeline, OutboundPipeline, Pipeline, LocalExecutorBuilder, spawn_local};
 
 mod helpers;
 
@@ -79,6 +81,7 @@ impl Shared {
 struct ChatHandler {
     state: Rc<RefCell<Shared>>,
     pipeline: Weak<dyn OutboundPipeline<TaggedBytesMut, TaggedString>>,
+    peer_addr: Option<SocketAddr>,
 }
 
 impl ChatHandler {
@@ -86,7 +89,11 @@ impl ChatHandler {
         state: Rc<RefCell<Shared>>,
         pipeline: Weak<dyn OutboundPipeline<TaggedBytesMut, TaggedString>>,
     ) -> Self {
-        ChatHandler { state, pipeline }
+        ChatHandler {
+            state,
+            pipeline,
+            peer_addr: None,
+        }
     }
 }
 
@@ -112,25 +119,32 @@ impl Handler for ChatHandler {
         );
 
         let mut s = self.state.borrow_mut();
-        if msg.message == "bye" {
-            s.leave(&peer_addr);
-        } else {
-            if !s.contains(&peer_addr) {
-                s.join(peer_addr, self.pipeline.clone());
-            }
-            s.broadcast(
-                peer_addr,
-                TaggedString {
-                    now: Instant::now(),
-                    transport: TransportContext {
-                        local_addr: msg.transport.local_addr,
-                        ecn: msg.transport.ecn,
-                        ..Default::default()
-                    },
-                    message: format!("{}\r\n", msg.message),
-                },
-            );
+        if !s.contains(&peer_addr) {
+            s.join(peer_addr, self.pipeline.clone());
+            self.peer_addr = Some(peer_addr);
         }
+        s.broadcast(
+            peer_addr,
+            TaggedString {
+                now: Instant::now(),
+                transport: TransportContext {
+                    local_addr: msg.transport.local_addr,
+                    ecn: msg.transport.ecn,
+                    ..Default::default()
+                },
+                message: format!("{}\r\n", msg.message),
+            },
+        );
+    }
+
+    fn handle_eof(&mut self, ctx: &Context<Self::Rin, Self::Rout, Self::Win, Self::Wout>) {
+        // first leave itself from state, otherwise, it may still receive message from broadcast,
+        // which may cause data racing.
+        if let Some(peer_addr) = self.peer_addr {
+            let mut s = self.state.borrow_mut();
+            s.leave(&peer_addr);
+        }
+        ctx.fire_handle_close();
     }
 
     fn handle_timeout(
@@ -157,10 +171,10 @@ impl Handler for ChatHandler {
 }
 
 #[derive(Parser)]
-#[command(name = "Chat Server UDP")]
+#[command(name = "Chat Server TCP")]
 #[command(author = "Rusty Rain <y@liu.mx>")]
 #[command(version = "0.1.0")]
-#[command(about = "An example of chat server udp", long_about = None)]
+#[command(about = "An example of chat server tcp", long_about = None)]
 struct Cli {
     #[arg(short, long)]
     debug: bool,
@@ -172,13 +186,7 @@ struct Cli {
     log_level: String,
 }
 
-fn build_pipeline() -> Rc<Pipeline<TaggedBytesMut, TaggedString>> {
-    // Create the shared state. This is how all the peers communicate.
-    // The server task will hold a handle to this. For every new client, the
-    // `state` handle is cloned and passed into the handler that processes the
-    // client connection.
-    let state = Rc::new(RefCell::new(Shared::new()));
-
+fn build_pipeline(state: Rc<RefCell<Shared>>) -> Rc<Pipeline<TaggedBytesMut, TaggedString>> {
     let pipeline: Rc<Pipeline<TaggedBytesMut, TaggedString>> = Rc::new(Pipeline::new());
 
     let line_based_frame_decoder_handler = TaggedByteToMessageCodec::new(Box::new(
@@ -195,24 +203,32 @@ fn build_pipeline() -> Rc<Pipeline<TaggedBytesMut, TaggedString>> {
 }
 
 fn write_socket_output(
-    socket: &UdpSocket,
+    socket: &mut TcpStream,
     pipeline: &Rc<Pipeline<TaggedBytesMut, TaggedString>>,
 ) -> anyhow::Result<()> {
     while let Some(transmit) = pipeline.poll_write() {
-        socket.send_to(&transmit.message, transmit.transport.peer_addr)?;
+        match socket.write(&transmit.message) {
+            Ok(n) => {
+                trace!("socket write {} bytes", n);
+            }
+            Err(err) => {
+                warn!("socket write error {}", err);
+                break;
+            }
+        }
     }
 
     Ok(())
 }
 
-fn read_socket_input(socket: &UdpSocket, buf: &mut [u8]) -> Option<TaggedBytesMut> {
-    match socket.recv_from(buf) {
-        Ok((n, peer_addr)) => Some(TaggedBytesMut {
+fn read_socket_input(socket: &mut TcpStream, buf: &mut [u8]) -> Option<TaggedBytesMut> {
+    match socket.read(buf) {
+        Ok(n) => Some(TaggedBytesMut {
             now: Instant::now(),
             transport: TransportContext {
                 local_addr: socket.local_addr().unwrap(),
-                peer_addr,
-                protocol: Protocol::UDP,
+                peer_addr: socket.peer_addr().unwrap(),
+                protocol: Protocol::TCP,
                 ecn: None,
             },
             message: BytesMut::from(&buf[..n]),
@@ -226,15 +242,14 @@ fn read_socket_input(socket: &UdpSocket, buf: &mut [u8]) -> Option<TaggedBytesMu
     }
 }
 
-fn run(stop_rx: crossbeam_channel::Receiver<()>, host: String, port: u16) -> anyhow::Result<()> {
-    let socket =
-        UdpSocket::bind(format!("{host}:{port}")).expect(&format!("binding to {host}:{port}"));
-
-    println!("listening {}...", socket.local_addr()?);
-
+fn run_pipeline(
+    mut socket: TcpStream,
+    stop_rx: crossbeam_channel::Receiver<()>,
+    state: Rc<RefCell<Shared>>,
+) -> anyhow::Result<()> {
     let mut buf = vec![0; 2000];
 
-    let pipeline = build_pipeline();
+    let pipeline = build_pipeline(state);
     pipeline.transport_active();
     loop {
         // Check cancellation
@@ -247,7 +262,7 @@ fn run(stop_rx: crossbeam_channel::Receiver<()>, host: String, port: u16) -> any
             }
         };
 
-        write_socket_output(&socket, &pipeline)?;
+        write_socket_output(&mut socket, &pipeline)?;
 
         // Poll pipeline to get next timeout
         let mut eto = Instant::now() + Duration::from_millis(100);
@@ -265,7 +280,7 @@ fn run(stop_rx: crossbeam_channel::Receiver<()>, host: String, port: u16) -> any
             .set_read_timeout(Some(delay_from_now))
             .expect("setting socket read timeout");
 
-        if let Some(input) = read_socket_input(&socket, &mut buf) {
+        if let Some(input) = read_socket_input(&mut socket, &mut buf) {
             pipeline.handle_read(input);
         }
 
@@ -275,6 +290,59 @@ fn run(stop_rx: crossbeam_channel::Receiver<()>, host: String, port: u16) -> any
     pipeline.transport_inactive();
 
     println!("server on {} is gracefully down", socket.local_addr()?);
+    Ok(())
+}
+
+async fn run(stop_rx: crossbeam_channel::Receiver<()>, host: String, port: u16) -> anyhow::Result<()> {
+    let wait_group = WaitGroup::new();
+
+    // Create the shared state. This is how all the peers communicate.
+    // The server task will hold a handle to this. For every new client, the
+    // `state` handle is cloned and passed into the handler that processes the
+    // client connection.
+    let state = Rc::new(RefCell::new(Shared::new()));
+
+    let listener = TcpListener::bind(format!("{host}:{port}"))?;
+    listener.set_nonblocking(true)?;
+
+    let listener_stop_rx = stop_rx.clone();
+    loop {
+        // Check cancellation
+        match listener_stop_rx.try_recv() {
+            Ok(_) => break,
+            Err(err) => {
+                if err.is_disconnected() {
+                    break;
+                }
+            }
+        };
+
+        match listener.accept() {
+            Ok((stream, addr)) => {
+                println!("Connection from {addr}");
+                let worker = wait_group.add(1);
+                let stream_stop_rx = listener_stop_rx.clone();
+                let state_clone = state.clone();
+                spawn_local( async move {
+                    if let Err(err) = run_pipeline(stream, stream_stop_rx, state_clone) {
+                        eprintln!("run got error: {}", err);
+                    }
+                    worker.done();
+                }).detach();
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                eprintln!("Accept error: {e}");
+                break;
+            }
+        }
+    }
+
+    println!("Wait for Gracefully Shutdown...");
+    wait_group.wait();
+
     Ok(())
 }
 
@@ -303,7 +371,7 @@ fn main() -> anyhow::Result<()> {
     let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(1);
 
     println!("Press Ctrl-C to stop");
-    println!("try `nc -u {} {}` in another shell", host, port);
+    println!("try `nc {} {}` in another shell", host, port);
     std::thread::spawn(move || {
         let mut stop_tx = Some(stop_tx);
         ctrlc::set_handler(move || {
@@ -314,9 +382,11 @@ fn main() -> anyhow::Result<()> {
         .expect("Error setting Ctrl-C handler");
     });
 
-    if let Err(err) = run(stop_rx, host, port) {
-        eprintln!("run got error: {}", err);
-    }
+    LocalExecutorBuilder::default().run(async move {
+        if let Err(err) = run(stop_rx, host, port).await {
+            eprintln!("run got error: {}", err);
+        }
+    });
 
-    Ok(())
+   Ok(())
 }

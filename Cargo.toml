@@ -13,6 +13,10 @@ categories = [ "network-programming" ]
 
 [dependencies]
 log = "0.4.28"
+smol = "2.0.2"
+scoped-tls = "1.0.1"
+core_affinity = "0.8.3"
+futures-lite = "2.6.1"
 
 [dev-dependencies]
 bytes = "1.5.0"
@@ -24,9 +28,9 @@ ctrlc = "3.4.2"
 crossbeam-channel = "0.5"
 wg = "0.7"
 
-#[[example]]
-#name = "chat_server_tcp"
-#path = "examples/chat_server_tcp.rs"
+[[example]]
+name = "chat_server_tcp"
+path = "examples/chat_server_tcp.rs"
 
 [[example]]
 name = "chat_server_udp"

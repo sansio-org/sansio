@@ -192,7 +192,9 @@ pub(crate) mod handler_internal;
 pub(crate) mod pipeline;
 pub(crate) mod pipeline_internal;
 pub(crate) mod protocol;
+pub(crate) mod local_executor;
 
 pub use handler::{Context, Handler};
 pub use pipeline::{InboundPipeline, OutboundPipeline, Pipeline};
 pub use protocol::Protocol;
+pub use local_executor::{LocalExecutorBuilder, spawn_local, try_yield_local, yield_local};
