@@ -1,6 +1,6 @@
 //! Async local executor
 
-use core_affinity::{set_for_current, CoreId};
+use core_affinity::{CoreId, set_for_current};
 use scoped_tls::scoped_thread_local;
 use smol::{LocalExecutor, Task};
 use std::{

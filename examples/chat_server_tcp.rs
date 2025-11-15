@@ -14,7 +14,10 @@ use std::{
 };
 use wg::WaitGroup;
 
-use sansio::{Context, Handler, InboundPipeline, OutboundPipeline, Pipeline, LocalExecutorBuilder, spawn_local};
+use sansio::{
+    Context, Handler, InboundPipeline, LocalExecutorBuilder, OutboundPipeline, Pipeline,
+    spawn_local,
+};
 
 mod helpers;
 
@@ -293,7 +296,11 @@ fn run_pipeline(
     Ok(())
 }
 
-async fn run(stop_rx: crossbeam_channel::Receiver<()>, host: String, port: u16) -> anyhow::Result<()> {
+async fn run(
+    stop_rx: crossbeam_channel::Receiver<()>,
+    host: String,
+    port: u16,
+) -> anyhow::Result<()> {
     let wait_group = WaitGroup::new();
 
     // Create the shared state. This is how all the peers communicate.
@@ -323,12 +330,13 @@ async fn run(stop_rx: crossbeam_channel::Receiver<()>, host: String, port: u16) 
                 let worker = wait_group.add(1);
                 let stream_stop_rx = listener_stop_rx.clone();
                 let state_clone = state.clone();
-                spawn_local( async move {
+                spawn_local(async move {
                     if let Err(err) = run_pipeline(stream, stream_stop_rx, state_clone) {
                         eprintln!("run got error: {}", err);
                     }
                     worker.done();
-                }).detach();
+                })
+                .detach();
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
@@ -388,5 +396,5 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-   Ok(())
+    Ok(())
 }
