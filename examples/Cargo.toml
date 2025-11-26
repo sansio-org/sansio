@@ -21,7 +21,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 ctrlc = "3"
 crossbeam-channel = "0.5"
-wg = "0.7"
+wg = "0.9"
 log = "0.4"
 
 [features]
