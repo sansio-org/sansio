@@ -13,10 +13,26 @@ categories = [ "network-programming" ]
 
 [dependencies]
 log = "0.4.28"
-smol = "2.0.2"
 scoped-tls = "1.0.1"
 core_affinity = "0.8.3"
-futures-lite = "2.6.1"
+
+# Runtime: smol (default)
+smol = { version = "2.0.2", optional = true }
+futures-lite = { version = "2.6.1", optional = true }
+
+# Runtime: tokio (optional)
+tokio = { version = "1", optional = true, features = ["rt", "sync", "macros"] }
+
+[features]
+# Default: Use smol's LocalExecutor (lightweight, minimal dependencies)
+default = ["runtime-smol"]
+
+# Use smol's LocalExecutor for local task execution
+runtime-smol = ["smol", "futures-lite"]
+
+# Use tokio's LocalSet for local task execution
+# Note: Cannot be used together with runtime-smol
+runtime-tokio = ["tokio"]
 
 [dev-dependencies]
 bytes = "1.5.0"
@@ -28,9 +44,9 @@ ctrlc = "3.4.2"
 crossbeam-channel = "0.5"
 wg = "0.7"
 
-[[example]]
-name = "chat_server_tcp"
-path = "examples/chat_server_tcp.rs"
+#[[example]]
+#name = "chat_server_tcp"
+#path = "examples/chat_server_tcp.rs"
 
 [[example]]
 name = "chat_server_udp"
