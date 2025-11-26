@@ -1,30 +1,69 @@
-//! ### What is SansIO?
-//! SansIO is an IO-free Rust networking framework that makes it easy to build protocols, application clients/servers.
+//! # SansIO - IO-Free Networking Framework
 //!
-//! It's like [Netty](https://netty.io) or [Wangle](https://github.com/facebook/wangle), but in Rust.
+//! `sansio` is a Sans-IO networking framework for Rust that separates protocol logic from I/O operations,
+//! making it easy to build modular, reusable, and testable network protocols.
 //!
-//! ### What is a Pipeline?
-//! The fundamental abstraction of SansIO is the [Pipeline](crate::Pipeline).
-//! It offers immense flexibility to customize how requests and responses are handled by your service.
-//! Once you have fully understood this abstraction,
-//! you will be able to write all sorts of sophisticated protocols, application clients/servers.
+//! Inspired by [Netty](https://netty.io) and [Wangle](https://github.com/facebook/wangle),
+//! `sansio` brings the power of pipeline-based protocol composition to Rust.
 //!
-//! A [Pipeline](crate::Pipeline) is a chain of request/response [handlers](crate::Handler) that handle inbound request and
-//! outbound response. Once you chain handlers together, it provides an agile way to convert
-//! a raw data stream into the desired message type and the inverse -- desired message type to raw data stream.
-//! Pipeline implements an advanced form of the Intercepting Filter pattern to give a user full control
-//! over how an event is handled and how the handlers in a pipeline interact with each other.
+//! ## Core Concepts
 //!
-//! A [Handler](crate::Handler) should do one and only one function - just like the UNIX philosophy. If you have a handler that
-//! is doing more than one function than you should split it into individual handlers. This is really important for
-//! maintainability and flexibility as its common to change your protocol for one reason or the other.
+//! ### Pipeline
 //!
-//! The [Protocol](crate::Protocol) trait defines the core abstractions for building sans-io protocols.
-//! It enables writing modular, reusable network protocols that are fully decoupled from underlying
-//! networking, timers, and other I/O mechanisms. Despite its simplicity, it is a powerful foundation
-//! for the rest of the sans-io library.
+//! The [`Pipeline`] is the fundamental abstraction. It's a chain of [`Handler`]s that process
+//! inbound and outbound data. Pipelines implement an advanced form of the Intercepting Filter
+//! pattern, giving you full control over how events flow through your protocol stack.
 //!
-//! ### How does an event flow in a Pipeline?
+//! **Key Benefits:**
+//! - Modular: Each handler does one thing well (UNIX philosophy)
+//! - Composable: Chain handlers to build complex protocols
+//! - Flexible: Easy to add, remove, or reorder handlers
+//! - Testable: Test handlers in isolation without I/O
+//!
+//! ### Handler
+//!
+//! A [`Handler`] processes messages flowing through the pipeline. Each handler has four associated types:
+//! - `Rin`: Input type for inbound messages
+//! - `Rout`: Output type for inbound messages
+//! - `Win`: Input type for outbound messages
+//! - `Wout`: Output type for outbound messages
+//!
+//! **Best Practice:** Keep handlers focused on a single responsibility. If a handler does multiple
+//! things, split it into separate handlers.
+//!
+//! ### Protocol
+//!
+//! The [`Protocol`] trait provides a simpler alternative to [`Handler`] for building Sans-IO protocols.
+//! It's fully decoupled from I/O, timers, and other runtime dependencies, making protocols easy to
+//! test and reuse across different runtime environments.
+//!
+//! ## Feature Flags
+//!
+//! ### Runtime Support
+//!
+//! Choose your async runtime via feature flags:
+//!
+//! - `runtime-smol` (default): Lightweight, minimal dependencies
+//! - `runtime-tokio`: Full tokio ecosystem integration
+//!
+//! **Note:** Only one runtime can be enabled at a time.
+//!
+//! ```toml
+//! # Default (smol)
+//! [dependencies]
+//! sansio = "0.0.5"
+//!
+//! # Using tokio
+//! [dependencies]
+//! sansio = { version = "0.0.5", default-features = false, features = ["runtime-tokio"] }
+//! ```
+//!
+//! ## Event Flow
+//!
+//! Messages flow through the pipeline in two directions:
+//! - **Inbound** (bottom-up): Network → Handler 1 → Handler 2 → ... → Handler N
+//! - **Outbound** (top-down): Handler N → ... → Handler 2 → Handler 1 → Network
+//!
 //! ```text
 //!                                                       | write()
 //!   +---------------------------------------------------+---------------+
@@ -68,12 +107,13 @@
 //!   +-------------------------------------------------------------------+
 //! ```
 //!
-//! ### Echo Server Example
-//! Let's look at how to write an echo server.
+//! ## Example: Echo Server
 //!
-//! Here's the main piece of code in our echo server; it receives a string from inbound direction in the pipeline,
-//! prints it to stdout and sends it back to outbound direction in the pipeline. It's really important to add the
-//! line delimiter because our pipeline will use a line decoder.
+//! Here's a complete example showing how to build a simple echo server using the pipeline pattern.
+//!
+//! ### Step 1: Define the Handler
+//!
+//! The echo handler receives strings, prints them, and sends them back:
 //! ```ignore
 //! struct EchoServerHandler {
 //!     transmits: VecDeque<String>,
@@ -110,7 +150,9 @@
 //! }
 //! ```
 //!
-//! This needs to be the final handler in the pipeline. Now the definition of the pipeline is needed to handle the requests and responses.
+//! ### Step 2: Build the Pipeline
+//!
+//! Chain handlers together to form a complete protocol stack:
 //! ```ignore
 //! fn build_pipeline() -> Rc<Pipeline<BytesMut,String>> {
 //!     let pipeline: Pipeline<BytesMut,String> = Pipeline::new();
@@ -128,20 +170,16 @@
 //! }
 //! ```
 //!
-//! It is very important to be strict in the order of insertion as they are ordered by insertion. The pipeline has 4 handlers:
+//! **Handler Responsibilities:**
+//! - **LineBasedFrameDecoder**: Splits byte stream on `\n` or `\r\n`
+//! - **StringCodec**: Converts bytes ↔ UTF-8 strings
+//! - **EchoHandler**: Application logic (echo messages back)
 //!
-//! * ByteToMessageCodecHandler
-//!     * Inbound: receives a zero-copy byte buffer and splits on line-endings
-//!     * Outbound: just passes the byte buffer to network transport layer
-//! * StringCodecHandler
-//!     * Inbound: receives a byte buffer and decodes it into a std::string and pass up to the EchoHandler.
-//!     * Outbound: receives a std::string and encodes it into a byte buffer and pass down to the ByteToMessageCodec.
-//! * EchoHandler
-//!     * Inbound: receives a std::string and writes it to the pipeline, which will send the message outbound.
-//!     * Outbound: receives a std::string and forwards it to StringCodec.
+//! **Important:** Handler order matters! They're processed in insertion order.
 //!
-//! Now that all needs to be done is plug the pipeline factory into a Bootstrap run function and that’s pretty much it.
+//! ### Step 3: Run the Event Loop
 //!
+//! The pipeline is pure protocol logic - you provide the I/O:
 //! ```ignore
 //! fn run(socket: UdpSocket, cancel_rx: crossbeam_channel::Receiver<()>) {
 //!     let mut buf = vec![0; 2000];
@@ -180,6 +218,48 @@
 //!     pipeline.transport_inactive();
 //! }
 //! ```
+//!
+//! ## Local Executor
+//!
+//! The `local_executor` module provides an optional async runtime abstraction:
+//!
+//! ```rust,no_run
+//! # #[cfg(feature = "runtime-smol")]
+//! use sansio::LocalExecutorBuilder;
+//!
+//! # #[cfg(feature = "runtime-smol")]
+//! LocalExecutorBuilder::default()
+//!     .run(async {
+//!         // Your async code here
+//!     });
+//! ```
+//!
+//! See the [`local_executor`] module documentation for more details and runtime-specific APIs.
+//!
+//! ## Additional Resources
+//!
+//! - [GitHub Repository](https://github.com/sansio-org/sansio)
+//! - [Examples](https://github.com/sansio-org/sansio/tree/master/examples)
+//! - [Local Executor Documentation](doc/LocalExecutor.md)
+//!
+//! ## Design Philosophy
+//!
+//! `sansio` follows the Sans-IO pattern, which separates protocol logic from I/O concerns:
+//!
+//! **Benefits:**
+//! - **Testable**: Test protocol logic without real network I/O
+//! - **Flexible**: Use with any I/O model (sync, async, embedded)
+//! - **Reusable**: Same protocol code across different environments
+//! - **Debuggable**: Easier to reason about and debug
+//!
+//! **Trade-offs:**
+//! - You manage the I/O loop yourself
+//! - More control means more responsibility
+//! - Steeper learning curve for simple cases
+//!
+//! For most applications, the benefits far outweigh the trade-offs, especially as your
+//! protocol logic becomes more complex.
+
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/sansio-org/sansio/master/doc/sansio-white.png"
 )]
@@ -187,19 +267,50 @@
 #![allow(dead_code)]
 #![warn(missing_docs)]
 
+// ========================================
+// Module Declarations
+// ========================================
+
+/// Handler implementations for protocol pipelines
 pub(crate) mod handler;
+
+/// Internal handler types (not part of public API)
 pub(crate) mod handler_internal;
+
+/// Pipeline implementations for chaining handlers
 pub(crate) mod pipeline;
+
+/// Internal pipeline types (not part of public API)
 pub(crate) mod pipeline_internal;
+
+/// Protocol trait for building Sans-IO protocols
 pub(crate) mod protocol;
 
+/// Local executor abstraction for async runtimes
+///
+/// Available when either `runtime-smol` or `runtime-tokio` feature is enabled.
+/// See [module documentation](local_executor/index.html) for runtime-specific APIs.
 #[cfg(any(feature = "runtime-smol", feature = "runtime-tokio"))]
 pub mod local_executor;
 
+// ========================================
+// Public Exports
+// ========================================
+
+/// Handler and context types for building protocol pipelines
 pub use handler::{Context, Handler};
+
+/// Pipeline traits for inbound and outbound message processing
 pub use pipeline::{InboundPipeline, OutboundPipeline, Pipeline};
+
+/// Protocol trait for Sans-IO protocol implementations
 pub use protocol::Protocol;
 
-// Common exports for both runtimes
+/// Local executor utilities (runtime-dependent)
+///
+/// Available functions:
+/// - [`spawn_local()`](local_executor::spawn_local): Spawn a task on the local executor
+/// - [`yield_local()`](local_executor::yield_local): Yield to other tasks (note: async in tokio, sync in smol)
+/// - [`LocalExecutorBuilder`]: Builder for configuring the executor
 #[cfg(any(feature = "runtime-smol", feature = "runtime-tokio"))]
 pub use local_executor::{spawn_local, yield_local, LocalExecutorBuilder};
