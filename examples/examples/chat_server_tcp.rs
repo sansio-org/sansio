@@ -1,22 +1,24 @@
 use bytes::BytesMut;
 use clap::Parser;
-use log::{trace, warn};
+use log::{error, info, trace, warn};
 use std::{
     cell::RefCell,
     collections::HashMap,
-    io::{ErrorKind, Read, Write},
+    io::Write,
     net::SocketAddr,
-    net::{TcpListener, TcpStream},
     rc::Rc,
     rc::Weak,
     str::FromStr,
     time::{Duration, Instant},
 };
-use wg::WaitGroup;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use wg::AsyncWaitGroup;
 
-use sansio::{Context, Handler, InboundPipeline, OutboundPipeline, Pipeline, LocalExecutorBuilder, spawn_local};
+use sansio::{Context, Handler, InboundPipeline, OutboundPipeline, Pipeline};
+use sansio_rt::{LocalExecutorBuilder, spawn_local};
 
-mod helpers;
+use examples::helpers;
 
 use helpers::{
     byte_to_message_decoder::{LineBasedFrameDecoder, TaggedByteToMessageCodec, TerminatorType},
@@ -46,12 +48,12 @@ impl Shared {
         peer: SocketAddr,
         pipeline: Weak<dyn OutboundPipeline<TaggedBytesMut, TaggedString>>,
     ) {
-        println!("{} joined", peer);
+        info!("{} joined", peer);
         self.peers.insert(peer, pipeline);
     }
 
     fn leave(&mut self, peer: &SocketAddr) {
-        println!("{} left", peer);
+        info!("{} left", peer);
         self.peers.remove(peer);
     }
 
@@ -113,7 +115,7 @@ impl Handler for ChatHandler {
         msg: Self::Rin,
     ) {
         let peer_addr = msg.transport.peer_addr;
-        println!(
+        info!(
             "received: {} from {:?} to {}",
             msg.message, peer_addr, msg.transport.local_addr
         );
@@ -202,49 +204,9 @@ fn build_pipeline(state: Rc<RefCell<Shared>>) -> Rc<Pipeline<TaggedBytesMut, Tag
     pipeline.update()
 }
 
-fn write_socket_output(
-    socket: &mut TcpStream,
-    pipeline: &Rc<Pipeline<TaggedBytesMut, TaggedString>>,
-) -> anyhow::Result<()> {
-    while let Some(transmit) = pipeline.poll_write() {
-        match socket.write(&transmit.message) {
-            Ok(n) => {
-                trace!("socket write {} bytes", n);
-            }
-            Err(err) => {
-                warn!("socket write error {}", err);
-                break;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn read_socket_input(socket: &mut TcpStream, buf: &mut [u8]) -> Option<TaggedBytesMut> {
-    match socket.read(buf) {
-        Ok(n) => Some(TaggedBytesMut {
-            now: Instant::now(),
-            transport: TransportContext {
-                local_addr: socket.local_addr().unwrap(),
-                peer_addr: socket.peer_addr().unwrap(),
-                protocol: Protocol::TCP,
-                ecn: None,
-            },
-            message: BytesMut::from(&buf[..n]),
-        }),
-
-        Err(e) => match e.kind() {
-            // Expected error for set_read_timeout(). One for windows, one for the rest.
-            ErrorKind::WouldBlock | ErrorKind::TimedOut => None,
-            _ => panic!("UdpSocket read failed: {e:?}"),
-        },
-    }
-}
-
-fn run_pipeline(
-    mut socket: TcpStream,
-    stop_rx: crossbeam_channel::Receiver<()>,
+async fn run_pipeline(
+    mut stream: TcpStream,
+    mut stop_rx: tokio::sync::broadcast::Receiver<()>,
     state: Rc<RefCell<Shared>>,
 ) -> anyhow::Result<()> {
     let mut buf = vec![0; 2000];
@@ -252,17 +214,18 @@ fn run_pipeline(
     let pipeline = build_pipeline(state);
     pipeline.transport_active();
     loop {
-        // Check cancellation
-        match stop_rx.try_recv() {
-            Ok(_) => break,
-            Err(err) => {
-                if err.is_disconnected() {
+        // prioritize stream.write than stream.read
+        while let Some(transmit) = pipeline.poll_write() {
+            match stream.write(&transmit.message).await {
+                Ok(n) => {
+                    trace!("stream write {} bytes", n);
+                }
+                Err(err) => {
+                    warn!("stream write error {}", err);
                     break;
                 }
             }
-        };
-
-        write_socket_output(&mut socket, &pipeline)?;
+        }
 
         // Poll pipeline to get next timeout
         let mut eto = Instant::now() + Duration::from_millis(100);
@@ -276,25 +239,60 @@ fn run_pipeline(
             continue;
         }
 
-        socket
-            .set_read_timeout(Some(delay_from_now))
-            .expect("setting socket read timeout");
+        let timer = tokio::time::sleep(delay_from_now);
+        tokio::pin!(timer);
 
-        if let Some(input) = read_socket_input(&mut socket, &mut buf) {
-            pipeline.handle_read(input);
+        tokio::select! {
+            _ = stop_rx.recv() => {
+                trace!("pipeline stream exit loop");
+                break;
+            }
+            _ = timer.as_mut() =>{
+                pipeline.handle_timeout(Instant::now());
+            }
+            res = stream.read(&mut buf) => {
+                match res {
+                    Ok(n) => {
+                        if n == 0 {
+                            pipeline.handle_eof();
+                            break;
+                        }
+
+                        trace!("stream read {} bytes", n);
+                        pipeline.handle_read(TaggedBytesMut {
+                                now: Instant::now(),
+                                transport: TransportContext {
+                                    local_addr: stream.local_addr()?,
+                                    peer_addr: stream.peer_addr()?,
+                                    protocol: Protocol::TCP,
+                                    ecn: None,
+                                },
+                                message: BytesMut::from(&buf[..n]),
+                            });
+                    }
+                    Err(err) => {
+                        warn!("stream read error {}", err);
+                        break;
+                    }
+                }
+            }
         }
-
-        // Drive time forward
-        pipeline.handle_timeout(Instant::now());
     }
     pipeline.transport_inactive();
 
-    println!("server on {} is gracefully down", socket.local_addr()?);
+    info!(
+        "tcp connection on {} is gracefully down",
+        stream.peer_addr()?
+    );
     Ok(())
 }
 
-async fn run(stop_rx: crossbeam_channel::Receiver<()>, host: String, port: u16) -> anyhow::Result<()> {
-    let wait_group = WaitGroup::new();
+async fn run(
+    mut stop_rx: tokio::sync::broadcast::Receiver<()>,
+    host: String,
+    port: u16,
+) -> anyhow::Result<()> {
+    let wait_group = AsyncWaitGroup::new();
 
     // Create the shared state. This is how all the peers communicate.
     // The server task will hold a handle to this. For every new client, the
@@ -302,46 +300,40 @@ async fn run(stop_rx: crossbeam_channel::Receiver<()>, host: String, port: u16) 
     // client connection.
     let state = Rc::new(RefCell::new(Shared::new()));
 
-    let listener = TcpListener::bind(format!("{host}:{port}"))?;
-    listener.set_nonblocking(true)?;
+    let listener = TcpListener::bind(format!("{host}:{port}")).await?;
 
-    let listener_stop_rx = stop_rx.clone();
     loop {
-        // Check cancellation
-        match listener_stop_rx.try_recv() {
-            Ok(_) => break,
-            Err(err) => {
-                if err.is_disconnected() {
-                    break;
-                }
-            }
-        };
-
-        match listener.accept() {
-            Ok((stream, addr)) => {
-                println!("Connection from {addr}");
-                let worker = wait_group.add(1);
-                let stream_stop_rx = listener_stop_rx.clone();
-                let state_clone = state.clone();
-                spawn_local( async move {
-                    if let Err(err) = run_pipeline(stream, stream_stop_rx, state_clone) {
-                        eprintln!("run got error: {}", err);
-                    }
-                    worker.done();
-                }).detach();
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                eprintln!("Accept error: {e}");
+        tokio::select! {
+            _ = stop_rx.recv() => {
+                trace!("listener exit loop");
                 break;
+            }
+            res = listener.accept() => {
+                match res {
+                    Ok((stream, addr)) => {
+                        info!("Connection from {addr}");
+                        let worker = wait_group.add(1);
+                        let stream_stop_rx = stop_rx.resubscribe();
+                        let state_clone = state.clone();
+                        spawn_local( async move {
+                            if let Err(err) = run_pipeline(stream, stream_stop_rx, state_clone).await {
+                                error!("run got error: {}", err);
+                            }
+                            worker.done();
+                        }).detach();
+                    }
+                    Err(err) => {
+                        warn!("listener accept error {}", err);
+                        break;
+                    }
+                }
             }
         }
     }
 
-    println!("Wait for Gracefully Shutdown...");
-    wait_group.wait();
+    info!("Wait for Gracefully Shutdown...");
+    wait_group.wait().await;
+    info!("Server is Gracefully Shutdown Completed");
 
     Ok(())
 }
@@ -368,10 +360,10 @@ fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(1);
+    let (stop_tx, stop_rx) = tokio::sync::broadcast::channel::<()>(1);
 
-    println!("Press Ctrl-C to stop");
-    println!("try `nc {} {}` in another shell", host, port);
+    info!("Press Ctrl-C to stop");
+    info!("try `nc {} {}` in another shell", host, port);
     std::thread::spawn(move || {
         let mut stop_tx = Some(stop_tx);
         ctrlc::set_handler(move || {
@@ -384,9 +376,9 @@ fn main() -> anyhow::Result<()> {
 
     LocalExecutorBuilder::default().run(async move {
         if let Err(err) = run(stop_rx, host, port).await {
-            eprintln!("run got error: {}", err);
+            error!("run got error: {}", err);
         }
     });
 
-   Ok(())
+    Ok(())
 }
