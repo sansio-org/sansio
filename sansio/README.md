@@ -9,7 +9,7 @@ Inspired by [Netty](https://netty.io) and [Wangle](https://github.com/facebook/w
 - **Sans-IO Design**: Complete separation of protocol logic from I/O operations
 - **Pipeline Architecture**: Chain handlers to build complex protocols from simple components
 - **Type-Safe Composition**: Rust's type system ensures handlers connect correctly
-- **Runtime Agnostic**: Works with both smol and tokio async runtimes
+- **Runtime Agnostic**: Works with tokio async runtime
 - **Testable**: Test protocol logic without any I/O
 
 ## Core Concepts
@@ -117,16 +117,16 @@ fn main() {
 
 ## Using with a Runtime
 
-`sansio` is purely Sans-IO without any runtime dependencies. For async runtime support, use the separate `sansio-rt` crate:
+`sansio` is purely Sans-IO without any runtime dependencies. For async runtime support, use the separate `sansio-executor` crate:
 
 ```toml
 [dependencies]
-sansio = "0.0.5"
-sansio-rt = "0.0.5"  # For runtime support
+sansio = "0.0.7"
+sansio-executor = "0.0.7"  # For runtime support
 ```
 
 ```rust
-use sansio_rt::LocalExecutorBuilder;
+use sansio_executor::LocalExecutorBuilder;
 
 fn main() {
     LocalExecutorBuilder::default()
@@ -136,13 +136,13 @@ fn main() {
 }
 ```
 
-See the [sansio-rt documentation](https://docs.rs/sansio-rt) for more details on runtime support.
+See the [sansio-executor documentation](https://docs.rs/sansio-executor) for more details on runtime support.
 
 ## Documentation
 
 - [API Documentation](https://docs.rs/sansio)
 - [Examples](../examples)
-- [Runtime Abstraction (sansio-rt)](https://docs.rs/sansio-rt)
+- [Executor (sansio-executor)](https://docs.rs/sansio-executor)
 
 ## Examples
 

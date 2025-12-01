@@ -1,6 +1,6 @@
 # Sansio Examples
 
-This crate contains examples demonstrating how to use the sansio ecosystem, including both the `sansio` core crate and the `sansio-rt` runtime abstraction.
+This crate contains examples demonstrating how to use the sansio ecosystem, including both the `sansio` core crate and the `sansio-executor` tokio-based executor.
 
 ## Structure
 
@@ -9,19 +9,37 @@ This crate contains examples demonstrating how to use the sansio ecosystem, incl
 
 ## Running Examples
 
-### With Default Runtime (smol)
+```bash
+cargo run --example chat_server_tcp -p examples
+```
+
+Or:
 
 ```bash
 cargo run --example chat_server_udp -p examples
 ```
 
-### With Tokio Runtime
+## Available Examples
 
+### chat_server_tcp
+
+A TCP-based chat server demonstrating:
+- Tokio async TCP sockets with `tokio::select!`
+- Pipeline-based protocol processing
+- Handler composition (frame decoder, string codec)
+- Shared state management
+- Multi-client message broadcasting
+- Task spawning and detaching with `spawn_local()`
+
+**Run:**
 ```bash
-cargo run --example chat_server_udp -p examples --no-default-features --features runtime-tokio
+cargo run --example chat_server_tcp -p examples -- --host 127.0.0.1 --port 8080
 ```
 
-## Available Examples
+**Connect with netcat:**
+```bash
+nc 127.0.0.1 8080
+```
 
 ### chat_server_udp
 

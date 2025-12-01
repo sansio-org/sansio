@@ -16,7 +16,7 @@ use tokio::net::{TcpListener, TcpStream};
 use wg::AsyncWaitGroup;
 
 use sansio::{Context, Handler, InboundPipeline, OutboundPipeline, Pipeline};
-use sansio_rt::{LocalExecutorBuilder, spawn_local};
+use sansio_executor::{LocalExecutorBuilder, spawn_local};
 
 use examples::helpers;
 

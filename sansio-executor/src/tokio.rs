@@ -17,7 +17,7 @@ scoped_thread_local!(pub(super) static LOCAL: LocalSet);
 
 /// A handle to a spawned task.
 ///
-/// This is a wrapper around tokio's `JoinHandle` that provides a unified API across runtimes.
+/// This is a wrapper around tokio's `JoinHandle` that provides a consistent API.
 ///
 /// When awaited, returns `Result<T, TaskError>`:
 /// - `Ok(T)`: The task completed successfully
@@ -26,7 +26,7 @@ scoped_thread_local!(pub(super) static LOCAL: LocalSet);
 /// # Example
 ///
 /// ```rust,no_run
-/// use sansio_rt::{LocalExecutorBuilder, spawn_local};
+/// use sansio_executor::{LocalExecutorBuilder, spawn_local};
 ///
 /// LocalExecutorBuilder::default().run(async {
 ///     let task = spawn_local(async { 42 });
@@ -57,7 +57,7 @@ impl<T> Task<T> {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use sansio_rt::{LocalExecutorBuilder, spawn_local};
+    /// use sansio_executor::{LocalExecutorBuilder, spawn_local};
     ///
     /// LocalExecutorBuilder::default().run(async {
     ///     let task = spawn_local(async {
@@ -82,7 +82,7 @@ impl<T> Task<T> {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use sansio_rt::{LocalExecutorBuilder, spawn_local};
+    /// use sansio_executor::{LocalExecutorBuilder, spawn_local};
     ///
     /// LocalExecutorBuilder::default().run(async {
     ///     let task = spawn_local(async {
@@ -196,7 +196,7 @@ impl LocalExecutorBuilder {
 /// # Example
 ///
 /// ```rust,no_run
-/// use sansio_rt::{LocalExecutorBuilder, spawn_local};
+/// use sansio_executor::{LocalExecutorBuilder, spawn_local};
 ///
 /// LocalExecutorBuilder::default().run(async {
 ///     let task1 = spawn_local(async { 1 + 1 });
@@ -220,14 +220,14 @@ pub fn spawn_local<T: 'static>(future: impl Future<Output = T> + 'static) -> Tas
 
 /// Yields to allow other tasks in the same executor to run.
 ///
-/// This is an async function for API consistency across runtimes. Call it as `yield_local().await`.
+/// This is an async function. Call it as `yield_local().await`.
 ///
 /// This function yields execution to allow other tasks in the same LocalSet to run.
 ///
 /// # Example
 ///
 /// ```rust,no_run
-/// use sansio_rt::{LocalExecutorBuilder, spawn_local, yield_local};
+/// use sansio_executor::{LocalExecutorBuilder, spawn_local, yield_local};
 ///
 /// LocalExecutorBuilder::default().run(async {
 ///     spawn_local(async {
