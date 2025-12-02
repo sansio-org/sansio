@@ -11,8 +11,11 @@ use std::{
     str::FromStr,
     time::{Duration, Instant},
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::broadcast,
+};
 use wg::AsyncWaitGroup;
 
 use sansio::{Context, Handler, InboundPipeline, OutboundPipeline, Pipeline};
@@ -153,6 +156,7 @@ impl Handler for ChatHandler {
     ) {
         //last handler, no need to fire_handle_timeout
     }
+
     fn poll_timeout(
         &mut self,
         _ctx: &Context<Self::Rin, Self::Rout, Self::Win, Self::Wout>,
@@ -201,9 +205,9 @@ fn build_pipeline(state: Rc<RefCell<Shared>>) -> Rc<Pipeline<TaggedBytesMut, Tag
     pipeline.update()
 }
 
-async fn run_pipeline(
+async fn process_pipeline(
     mut stream: TcpStream,
-    mut stop_rx: tokio::sync::broadcast::Receiver<()>,
+    mut stop_rx: broadcast::Receiver<()>,
     state: Rc<RefCell<Shared>>,
 ) -> anyhow::Result<()> {
     let mut buf = vec![0; 2000];
@@ -277,18 +281,15 @@ async fn run_pipeline(
     }
     pipeline.transport_inactive();
 
-    info!(
+    trace!(
         "tcp connection on {} is gracefully down",
         stream.peer_addr()?
     );
+
     Ok(())
 }
 
-async fn run(
-    mut stop_rx: tokio::sync::broadcast::Receiver<()>,
-    host: String,
-    port: u16,
-) -> anyhow::Result<()> {
+async fn run(mut stop_rx: broadcast::Receiver<()>, host: String, port: u16) -> anyhow::Result<()> {
     let wait_group = AsyncWaitGroup::new();
 
     // Create the shared state. This is how all the peers communicate.
@@ -313,8 +314,8 @@ async fn run(
                         let stream_stop_rx = stop_rx.resubscribe();
                         let state_clone = state.clone();
                         spawn_local( async move {
-                            if let Err(err) = run_pipeline(stream, stream_stop_rx, state_clone).await {
-                                error!("run got error: {}", err);
+                            if let Err(err) = process_pipeline(stream, stream_stop_rx, state_clone).await {
+                                error!("process_pipeline got error: {}", err);
                             }
                             worker.done();
                         }).detach();
@@ -357,7 +358,7 @@ fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    let (stop_tx, stop_rx) = tokio::sync::broadcast::channel::<()>(1);
+    let (stop_tx, stop_rx) = broadcast::channel::<()>(1);
 
     info!("Press Ctrl-C to stop");
     info!("try `nc {} {}` in another shell", host, port);

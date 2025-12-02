@@ -10,10 +10,10 @@
 //! cargo run --example chat_server_udp
 //! ```
 //!
-//! Or with a specific runtime:
+//! Or
 //!
 //! ```bash
-//! cargo run --example chat_server_udp --no-default-features --features runtime-tokio
+//! cargo run --example chat_server_tcp
 //! ```
 
 #![warn(rust_2018_idioms)]
