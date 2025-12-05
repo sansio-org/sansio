@@ -7,12 +7,13 @@ use std::{
     io::Error,
     net::SocketAddr,
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::ToSocketAddrs,
-    sync::broadcast,
+    sync::{Notify, broadcast},
 };
 use wg::AsyncWaitGroup;
 
@@ -30,10 +31,42 @@ pub use bootstrap_udp::{
     bootstrap_udp_client::BootstrapUdpClient, bootstrap_udp_server::BootstrapUdpServer,
 };
 
+/// A pipeline bundled with its write notification mechanism
+pub(crate) struct PipelineWithNotify<R, W> {
+    pub(crate) pipeline: Rc<Pipeline<R, W>>,
+    pub(crate) write_notify: Arc<Notify>,
+}
+
+impl<R, W> PipelineWithNotify<R, W> {
+    /// Create a new pipeline with automatic write notification setup
+    pub(crate) fn new(pipeline: Rc<Pipeline<R, W>>) -> Self
+    where
+        R: 'static,
+        W: 'static,
+    {
+        let write_notify = Arc::new(Notify::new());
+        let notify_clone = write_notify.clone();
+
+        pipeline.set_write_notify(Arc::new(move || {
+            notify_clone.notify_one();
+        }));
+
+        Self {
+            pipeline,
+            write_notify,
+        }
+    }
+
+    /// Get a reference to the pipeline for outbound operations
+    pub(crate) fn pipeline(&self) -> &Rc<Pipeline<R, W>> {
+        &self.pipeline
+    }
+}
+
 /// Creates a new [Pipeline]
 pub type PipelineFactoryFn<R, W> = Box<dyn Fn() -> Rc<Pipeline<R, W>>>;
 
-const MIN_DURATION_IN_MS: u64 = 100; // 100 ms
+const DEFAULT_TIMEOUT_DURATION: Duration = Duration::from_secs(86400); // 1 day duration
 
 struct Bootstrap<W> {
     max_payload_size: usize,

@@ -219,9 +219,11 @@
 //! 4. **Finalize Once**: Call `finalize()` after building your pipeline
 //! 5. **Event Propagation**: Most handlers should propagate events via `ctx.fire_*()`
 
-use std::{cell::RefCell, error::Error, rc::Rc, time::Instant};
+use std::{cell::RefCell, error::Error, rc::Rc, sync::Arc, time::Instant};
 
 use crate::{handler::Handler, pipeline_internal::PipelineInternal};
+
+pub type NotifyCallback = Arc<dyn Fn() + Send + Sync>;
 
 /// Inbound operations for a pipeline.
 ///
@@ -340,6 +342,17 @@ pub trait InboundPipeline<R> {
     ///
     /// - `err`: The error to propagate through the pipeline
     fn handle_error(&self, err: Box<dyn Error>);
+
+    #[doc(hidden)]
+    /// Sets a notify mechanism for write operations.
+    ///
+    /// This allows the I/O layer to be notified immediately when the pipeline
+    /// has data ready to write, instead of waiting for a timeout or read event.
+    ///
+    /// # Parameters
+    ///
+    /// - `notify`: A callback function that will be invoked when writes occur
+    fn set_write_notify(&self, notify: NotifyCallback);
 }
 
 /// Outbound operations for a pipeline.
@@ -789,6 +802,12 @@ impl<R: 'static, W: 'static> InboundPipeline<R> for Pipeline<R, W> {
     fn handle_error(&self, err: Box<dyn Error>) {
         let internal = self.internal.borrow();
         internal.handle_error(err);
+    }
+
+    #[doc(hidden)]
+    fn set_write_notify(&self, notify: NotifyCallback) {
+        let internal = self.internal.borrow();
+        internal.set_write_notify(notify);
     }
 }
 

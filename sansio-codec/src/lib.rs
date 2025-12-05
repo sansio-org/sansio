@@ -48,7 +48,6 @@
 //!
 //! - [`byte_to_message_decoder`]: Frame decoders for parsing byte streams
 //! - [`string_codec`]: UTF-8 string encoding/decoding handlers
-//! - [`transport`]: Transport context and tagged message types
 //!
 //! ## Transport Context
 //!

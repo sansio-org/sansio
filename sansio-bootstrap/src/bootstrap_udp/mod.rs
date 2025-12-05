@@ -53,8 +53,9 @@ impl<W: 'static> BootstrapUdp<W> {
         let socket = self.socket.take().unwrap();
 
         let pipeline_factory_fn = Rc::clone(self.boostrap.pipeline_factory_fn.as_ref().unwrap());
-        let pipeline_rd = (pipeline_factory_fn)();
-        let pipeline_wr = Rc::clone(&pipeline_rd);
+        let pipeline = (pipeline_factory_fn)();
+        let pipeline_with_notify = PipelineWithNotify::new(Rc::clone(&pipeline));
+        let pipeline_wr = pipeline;
 
         let (close_tx, close_rx) = broadcast::channel::<()>(1);
         {
@@ -69,7 +70,8 @@ impl<W: 'static> BootstrapUdp<W> {
         let worker = wait_group.add(1);
         spawn_local(async move {
             if let Err(err) =
-                Self::process_pipeline(socket, max_payload_size, pipeline_rd, close_rx).await
+                Self::process_pipeline(socket, max_payload_size, pipeline_with_notify, close_rx)
+                    .await
             {
                 error!("process_pipeline got error: {}", err);
             }
@@ -89,7 +91,7 @@ impl<W: 'static> BootstrapUdp<W> {
     async fn process_pipeline(
         socket: UdpSocket,
         max_payload_size: usize,
-        pipeline: Rc<dyn InboundPipeline<TaggedBytesMut>>,
+        pipeline_with_notify: PipelineWithNotify<TaggedBytesMut, W>,
         mut close_rx: broadcast::Receiver<()>,
     ) -> Result<(), Error> {
         let local_addr = socket.local_addr()?;
@@ -110,6 +112,10 @@ impl<W: 'static> BootstrapUdp<W> {
                     .write(std::io::IoSliceMut::<'_>::new(buf));
             });
         let mut iovs = unsafe { iovs.assume_init() };
+
+        // Extract pipeline and write_notify from the wrapper
+        let pipeline = pipeline_with_notify.pipeline();
+        let write_notify = &pipeline_with_notify.write_notify;
 
         pipeline.transport_active();
         loop {
@@ -133,7 +139,7 @@ impl<W: 'static> BootstrapUdp<W> {
                 }
             }
 
-            let mut eto = Instant::now() + Duration::from_millis(MIN_DURATION_IN_MS);
+            let mut eto = Instant::now() + DEFAULT_TIMEOUT_DURATION;
             pipeline.poll_timeout(&mut eto);
 
             let delay_from_now = eto
@@ -148,9 +154,15 @@ impl<W: 'static> BootstrapUdp<W> {
             tokio::pin!(timer);
 
             tokio::select! {
+                biased;
+
                 _ = close_rx.recv() => {
                     trace!("pipeline socket exit loop");
                     break;
+                }
+                _ = write_notify.notified() => {
+                    // Wake up to write pending transmits
+                    trace!("woken up by write notification");
                 }
                 _ = timer.as_mut() => {
                     pipeline.handle_timeout(Instant::now());

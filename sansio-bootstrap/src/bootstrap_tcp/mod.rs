@@ -52,22 +52,26 @@ impl<W: 'static> BootstrapTcp<W> {
         spawn_local(async move {
             loop {
                 tokio::select! {
+                    biased;
+
                     _ = close_rx.recv() => {
                         trace!("listener exit loop");
                         break;
                     }
                     res = listener.accept() => {
                         match res {
-                            Ok((socket, _peer_addr)) => {
+                            Ok((socket, peer_addr)) => {
+                                trace!("tcp connection from {}", peer_addr);
                                 // A new task is spawned for each inbound socket. The socket is
                                 // moved to the new task and processed there.
-                                let pipeline_rd = (pipeline_factory_fn)();
+                                let pipeline = (pipeline_factory_fn)();
+                                let pipeline_with_notify = PipelineWithNotify::new(pipeline);
                                 let child_close_rx = close_rx.resubscribe();
                                 let child_worker = worker.add(1);
                                 spawn_local(async move {
                                     if let Err(err) = Self::process_pipeline(socket,
                                                                    max_payload_size,
-                                                                   pipeline_rd,
+                                                                   pipeline_with_notify,
                                                                    child_close_rx).await {
                                         error!("process_pipeline got error: {}", err);
                                     }
@@ -110,14 +114,16 @@ impl<W: 'static> BootstrapTcp<W> {
 
         let wait_group = AsyncWaitGroup::new();
 
-        let pipeline_rd = (pipeline_factory_fn)();
-        let pipeline_wr = Rc::clone(&pipeline_rd);
+        let pipeline = (pipeline_factory_fn)();
+        let pipeline_with_notify = PipelineWithNotify::new(Rc::clone(&pipeline));
+        let pipeline_wr = pipeline;
         let max_payload_size = self.boostrap.max_payload_size;
 
         let worker = wait_group.add(1);
         spawn_local(async move {
             if let Err(err) =
-                Self::process_pipeline(socket, max_payload_size, pipeline_rd, close_rx).await
+                Self::process_pipeline(socket, max_payload_size, pipeline_with_notify, close_rx)
+                    .await
             {
                 error!("process_pipeline got error: {}", err);
             }
@@ -136,13 +142,17 @@ impl<W: 'static> BootstrapTcp<W> {
     async fn process_pipeline(
         mut stream: TcpStream,
         max_payload_size: usize,
-        pipeline: Rc<dyn InboundPipeline<TaggedBytesMut>>,
+        pipeline_with_notify: PipelineWithNotify<TaggedBytesMut, W>,
         mut close_rx: broadcast::Receiver<()>,
     ) -> Result<(), Error> {
         let local_addr = stream.local_addr()?;
         let peer_addr = stream.peer_addr()?;
 
         let mut buf = vec![0u8; max_payload_size];
+
+        // Extract pipeline and write_notify from the wrapper
+        let pipeline = pipeline_with_notify.pipeline();
+        let write_notify = &pipeline_with_notify.write_notify;
 
         pipeline.transport_active();
         loop {
@@ -159,7 +169,7 @@ impl<W: 'static> BootstrapTcp<W> {
                 }
             }
 
-            let mut eto = Instant::now() + Duration::from_millis(MIN_DURATION_IN_MS);
+            let mut eto = Instant::now() + DEFAULT_TIMEOUT_DURATION;
             pipeline.poll_timeout(&mut eto);
 
             let delay_from_now = eto
@@ -174,9 +184,15 @@ impl<W: 'static> BootstrapTcp<W> {
             tokio::pin!(timer);
 
             tokio::select! {
+                biased;
+
                 _ = close_rx.recv() => {
                     trace!("pipeline stream exit loop");
                     break;
+                }
+                _ = write_notify.notified() => {
+                    // Wake up to write pending transmits
+                    trace!("woken up by write notification");
                 }
                 _ = timer.as_mut() => {
                     pipeline.handle_timeout(Instant::now());

@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::{cell::RefCell, error::Error, io::ErrorKind, marker::PhantomData, rc::Rc, time::Instant};
 
+use crate::pipeline::NotifyCallback;
 use crate::{
     Context,
     handler::Handler,
@@ -15,6 +16,7 @@ pub(crate) struct PipelineInternal<R, W> {
     contexts: Vec<Rc<RefCell<dyn ContextInternal>>>,
 
     transmits: Rc<RefCell<VecDeque<W>>>,
+    write_notify: Rc<RefCell<Option<NotifyCallback>>>,
     phantom: PhantomData<R>,
 }
 
@@ -29,6 +31,7 @@ impl<R: 'static, W: 'static> PipelineInternal<R, W> {
             contexts: vec![context],
 
             transmits,
+            write_notify: Rc::new(RefCell::new(None)),
             phantom: PhantomData,
         }
     }
@@ -146,8 +149,21 @@ impl<R: 'static, W: 'static> PipelineInternal<R, W> {
     }
 
     pub(crate) fn write(&self, msg: W) {
-        let mut transmits = self.transmits.borrow_mut();
-        transmits.push_back(msg);
+        {
+            let mut transmits = self.transmits.borrow_mut();
+            transmits.push_back(msg);
+        }
+
+        // Notify the I/O layer that there's data to write
+        let notify = self.write_notify.borrow();
+        if let Some(notify) = notify.as_ref() {
+            notify();
+        }
+    }
+
+    pub(crate) fn set_write_notify(&self, notify: NotifyCallback) {
+        let mut write_notify = self.write_notify.borrow_mut();
+        *write_notify = Some(notify);
     }
 
     pub(crate) fn transport_active(&self) {
