@@ -152,7 +152,7 @@ impl Handler for ChatHandler {
 #[derive(Parser)]
 #[command(name = "Chat Server UDP")]
 #[command(author = "Rusty Rain <y@liu.mx>")]
-#[command(version = "0.1.0")]
+#[command(version = "0.0.0")]
 #[command(about = "An example of chat server udp", long_about = None)]
 struct Cli {
     #[arg(short, long)]
