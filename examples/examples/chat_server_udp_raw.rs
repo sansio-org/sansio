@@ -20,7 +20,7 @@ use sansio_transport::{TaggedBytesMut, TaggedString, TransportContext, Transport
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 struct Shared {
-    peers: HashMap<SocketAddr, Weak<dyn OutboundPipeline<TaggedBytesMut, TaggedString>>>,
+    peers: HashMap<SocketAddr, Weak<dyn OutboundPipeline<TaggedString>>>,
 }
 
 impl Shared {
@@ -35,11 +35,7 @@ impl Shared {
         self.peers.contains_key(peer)
     }
 
-    fn join(
-        &mut self,
-        peer: SocketAddr,
-        pipeline: Weak<dyn OutboundPipeline<TaggedBytesMut, TaggedString>>,
-    ) {
+    fn join(&mut self, peer: SocketAddr, pipeline: Weak<dyn OutboundPipeline<TaggedString>>) {
         println!("{} joined", peer);
         self.peers.insert(peer, pipeline);
     }
@@ -74,14 +70,11 @@ impl Shared {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 struct ChatHandler {
     state: Rc<RefCell<Shared>>,
-    pipeline: Weak<dyn OutboundPipeline<TaggedBytesMut, TaggedString>>,
+    pipeline: Weak<dyn OutboundPipeline<TaggedString>>,
 }
 
 impl ChatHandler {
-    fn new(
-        state: Rc<RefCell<Shared>>,
-        pipeline: Weak<dyn OutboundPipeline<TaggedBytesMut, TaggedString>>,
-    ) -> Self {
+    fn new(state: Rc<RefCell<Shared>>, pipeline: Weak<dyn OutboundPipeline<TaggedString>>) -> Self {
         ChatHandler { state, pipeline }
     }
 }

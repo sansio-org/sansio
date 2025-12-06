@@ -382,7 +382,7 @@ pub trait InboundPipeline<R> {
 /// pipeline.write("Hello, World!".to_string());
 /// pipeline.close();
 /// ```
-pub trait OutboundPipeline<R, W> {
+pub trait OutboundPipeline<W> {
     /// Writes a message into the pipeline.
     ///
     /// The message will flow through handlers from last to first (outbound),
@@ -811,7 +811,7 @@ impl<R: 'static, W: 'static> InboundPipeline<R> for Pipeline<R, W> {
     }
 }
 
-impl<R: 'static, W: 'static> OutboundPipeline<R, W> for Pipeline<R, W> {
+impl<R: 'static, W: 'static> OutboundPipeline<W> for Pipeline<R, W> {
     /// Writes a message to pipeline
     fn write(&self, msg: W) {
         let internal = self.internal.borrow();
